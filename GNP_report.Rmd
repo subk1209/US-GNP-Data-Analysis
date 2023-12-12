@@ -1,0 +1,262 @@
+---
+title: "Real GNP (Percentage change)"
+author: "Subhajit Karmakar"
+date: "2023-06-05"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+<style type="text/css">
+  body, td{
+  font-size: 14pt;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.height = 5,
+                      fig.width = 10)
+```
+
+## Description
+Here we have the data of GNP from **U.S. Bureau of Economic Analysis** and we will work with the percentage change in the GNP from quarter to quarter. 
+
+Data source: <https://fred.stlouisfed.org/series/A001RO1Q156NBEA#0>
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(fGarch)
+library(glue)
+
+df <- read.csv("D:/Projects/Time Series Project/data/GNP data.csv")
+glimpse(df)
+```
+
+We see that, we have **301** data points in total and the types of the columns in the data are not in proper manner, for example the date is in `character` format. We need to modify that and visualize the data.
+
+```{r}
+colnames(df) <- c('Date', "Change")
+df$Date <- as.Date(df$Date, format = '%Y-%m-%d')
+
+
+glue('Starting date: {d1}',
+     'Ending date: {d2}', .sep = "\n",
+     d1 = min(df$Date), d2 = max(df$Date))
+```
+Thus we have data from $\small 1^{st}\ Quarter, 1948$ to $\small 1^{st}\ Quarter, 2023$.
+
+## Visualization
+```{r}
+df %>% ggplot(aes(x = Date, y = Change)) + 
+  geom_line(colour = 'red') + theme_light() +
+  scale_x_date(date_labels = "%b-%Y",
+               date_breaks = "3 years") + 
+  theme(axis.text.x = element_text(angle = 90,
+                                   vjust = 0.5)) +
+  geom_hline(yintercept = 0, colour = 'blue', lty = 2) +
+  labs(y = "Percentage change")
+```
+
+**Note:** Since the data is in *percentage change* form, so it is already in *difference* form, so it is expected that no systematic pattern will be there in the data. Let $\small \{x_t\}$ be the amount of percentage change at $\small t^{th}$ quarter.
+
+We will wish to fit a **AR** model to our data. The main task is to determine the order of Auto-Regressive model. Now let us look at the **ACF** and **PACF** of $\small x_t$.
+
+```{r}
+par(mfrow = c(1,2))
+acf(df$Change, main = '')
+pacf(df$Change, main = '')
+```
+
+From the above plot of partial autocorrelation function, we see that after the 13-th lag, all the coefficients are under the confidence interval. So, it seems that and **AR(13)** model. But fewer coefficients are under the confidence band, so we need to customize the model.
+
+```{r}
+arima(df$Change, order = c(13,0,0)) -> a1
+a1
+```
+**Observations:** $\small \sigma^2 = 1.469$ and $\small AIC = 1006$.
+
+Now that we have fitted this **AR(13)** model, we will check for the residuals that if they can be considered as white noises. For this we will use **Ljung-Box** test, where the hypothesis to be tested is given by: 
+
+$$\small H_0: \rho_1 = \rho_2 = \cdots = \rho_m = 0 \quad vs\quad H_1: Not\ H_0$$
+$\small \rho_k$ being the auto-correlation at lag k.
+
+
+```{r}
+# Function to plot the p-values:
+
+p.func <- function(highest_lag, res){
+  pval <- 0
+  for(i in 1:highest_lag) (pval[i] = 
+                    Box.test(a1$residuals, lag = i,
+                 type = "Ljung-Box")$p.value)
+  
+  data.frame('Lags' = 1:highest_lag, 'Pvalue' = pval) %>% 
+  ggplot(aes(x = Lags, y = Pvalue)) + 
+  geom_point(size = 2) + theme_light() +
+  geom_hline(yintercept = 0.05,
+               linetype = 2, colour = 'red') +
+  scale_x_continuous(n.breaks = 10) + 
+  scale_y_continuous(n.breaks = 10) +
+  annotate("text", x = 5, y = 0.07,
+             label = "Threshold = 0.05",
+             size = 4, colour = 'blue')
+}
+
+p.func(50, a1$residuals)
+```
+**Comment:** We can see that, all the p-values are much higher than 0.05, implies that the residuals can be considered as white noises, or we can say that, **AR(13)** is appropriate for our data.
+
+But, one thing should be noted that the t-values (coefficients/standard error) obtained from the partial autocorrelation coefficients and the standard errors, many of them are very small, implies that those coefficients are not statistically significant, so inclusion of those lagged terms in our model is not necessary. In the next step, we omit them and re-fit an AR(13) model. 
+
+From the table of coefficients, we see that, *lag-2*, *lag-3*, *lag-6*,*lag-7*,*lag-10*,*lag-11* are not statistically significant. 
+
+```{r, warning=FALSE}
+arima(df$Change, order = c(13,0,0),
+      fixed = c(NA,0,0,NA,NA,0,0,NA,NA,0,0,NA,NA,NA)) ->a2
+a2
+```
+
+
+**Observations:** 
+
+* $\small \sigma^2 = 1.489$ and $\small AIC = 997.98$
+* All the coefficients are statistically significant.
+* AIC value is less than the earlier one and variance being  almost the same as previous.
+* The number of terms in the model has also decreased.
+
+
+## Final model
+
+The final model we consider is as follows: 
+$\scriptsize\mathbf{x_t = 3.0956 + 1.0292x_{t-1} - 0.945x_{t-4} + 0.8607x_{t-5} - 0.7319x_{t-8} + 0.718x_{t-9} - 0.5338x_{t-12} + 0.378x_{t-13}}$
+
+
+We again perform **Ljung-Box** test to verify whether the residuals from this model can be considered as white noises or not. Also, we will plot the ACFs to see if the residuals are correlated.
+
+
+```{r}
+p.func(50, a2$residuals)
+
+
+par(mfrow = c(1,2))
+plot(a2$residuals, ylab = 'Residuals', 
+     xlab = 'Time points')
+abline(h= 0)
+acf(a2$residuals, main = '', lag.max = 50)
+```
+**Comment:** From the above plots, we can summarize our findings in this manner: the residuals are fluctuating almost randomly above and below 0, and from the ACF plot, all the autocorrelation values are within the confidence interval, implies that the auto-correlations are not statistically significant i.e. the residuals are uncorrelated. Also, all the p-values obtained from Ljung-Box test are much more higher than 0.05 i.e. we fail to reject the null hypothesis that all the auto-correlations are statistically insignificant.
+
+
+
+
+## Volatility model
+In spite of none of the ACF values of residuals of the fitted model are significant, there may exist dependency among the residuals as can be detected faintly by the varying ranges of residual plot at different time points, indicating a slight volatility in the model.
+
+```{r}
+par(mfrow = c(1,2))
+acf(a2$residuals, main = 'ACF of original series')
+acf(abs(a2$residuals), main = 'ACF of absolute of original series')
+```
+**Comment:** From the graph on the right panel, it is clear that there exists serial correlation upto a maximum of lag 4.
+
+We further test for ARCH effect now.
+
+#### **Test 1**
+```{r}
+Box.test(a2$residuals, type = 'Ljung-Box', lag = 4)
+Box.test(abs(a2$residuals), type = 'Ljung-Box', lag = 4)
+```
+
+
+#### **Test 2**
+*This test is applied to check for linear relationship between the past squared residuals.*
+
+```{r}
+# Fitting multiple linear regression:
+f <- function(x, m){
+  
+  n <- length(x); n
+  M <- as.data.frame(matrix(ncol = m+1, nrow = n-m,
+                            dimnames = list(1:(n-m),
+                                            c('y',paste0('x',1:m)))))
+  
+  for(i in (m+1):1) (M[,i] <- (x[i:(n-m-1+i)])^2)
+  
+  cname <- names(M); cname
+  
+  reformulate(cname[2:(m+1)], response = 'y') -> f
+  f %>% lm(data = M) %>% summary() -> s
+  pf(s$fstatistic, m, n-2*m-1, lower.tail = F)[[1]] %>% 
+    return()
+}
+
+
+glue('p-value of the regression: {p}', 
+           p = f(a2$residuals, 4))
+```
+**Comment:** Clearly there exists a strong case for the presence of ARCH effect in the shock values.
+ 
+
+
+## Model fitting
+Since the maximum correlation among the absolute values of residuals was for lag 4, it makes sense to fit a `ARCH(4)` model on the residuals. 
+
+```{r}
+arch4 <- garchFit(~1 + garch(4,0), data = a2$residuals, trace = F,
+                  include.mean = F)
+summary(arch4)
+```
+
+The fitted ARCH model is given by:
+\[
+\sigma^2_t = 0.41207 + 0.72003\cdot a_{t-1} + 0.12263\cdot a_{t-2} + 0.0754\cdot a_{t-3} + 0.07197\cdot a_{t-4}
+\]
+
+From the above summary table, it is clear that $\small \alpha_2,\alpha_3,\alpha_4$ are statistically insignificant, so it makes sense to update the model fitted. 
+
+We also note that the ACF of the absolute residuals at lags 2 and 3 were also not statistically significant. 
+
+```{r}
+arch1 <- garchFit(~1 + garch(1,0), data = a2$residuals, trace = F,
+                  include.mean = F)
+summary(arch1)
+```
+
+The final fitted ARCH model is given by:
+\[
+\sigma^2_t = 0.72497 + 0.65367\cdot a_{t-1}
+\]
+
+
+## Forcasting
+Now, we forecast for 2023 Q2 seasonally adjusted percentage change of GNP of US.
+
+The one-step ahead AR forecast is given by:
+```{r}
+predict(a2)
+u_302 <- predict(a2)$pred[1]
+```
+
+
+The volatility for the past observed GNPs are given by:
+```{r}
+plot(volatility(arch1), type = 'o', pch = 20,
+     ylab = 'Volatility')
+```
+
+
+Now, we predict the volatility for the one-step ahead forecasted value. 
+
+```{r}
+sigma_sq_302 <- 0.72497 + 0.65367*(a2$residuals[301])^2
+sqrt(sigma_sq_302)
+```
+
+
+
+
+
+
+
